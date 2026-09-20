@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html data-page-node-id="DrIeyBoJm7yE4PNTRN5TRB" lang="zh-CN">
+<head data-page-node-id="5DS5sbbA8B5G07KcPXpKnx">
+<script data-page-node-id="ceKdo8nj9hLSBoSj2iW5hS" src="/page/page_comm/inject.js"></script>
+<meta data-page-node-id="op6tWqjyVaDWENDiL0WzWw" charset="UTF-8">
+<!--pnid:ltSwPsUPQebLca4E49cv2H--><!--
+  ============================================================
+  每日预算挑战 · 任务签到表   版本 v2    最后更新 2026-09-14
+  单文件 HTML，无外部依赖，可离线打开。改此文件时请保留本注释。
+
+  【页面结构】自上而下 6 块
+    1 预算总览：今日剩余大数字 + 进度条 + 今日已花/累计结余/超支天数
+      内含「月度预算」面板（本月 + 未来 3 个月 + 规则说明 + 锁定日志）
+    2 每日签到：签到按钮 + 连续天数 + 当月日历
+    3 消费记录：快捷标签 + 类别下拉 + 金额 + 记一笔 + 当日列表
+    4 今日任务：可勾选、可增删，每天按日期独立重置
+    5 本月统计：每日柱状图 + 本月单日消费总计
+    6 数据与备份：备份状态 + JSON 备份/恢复 + CSV 导出 + 演示数据
+
+  【数据存储】localStorage，键名 daily30_budget_v2
+    {
+      budgets: { "YYYY-MM": {value, locked, edits, preset, presetAt, finalUsed} },
+      days:    { "YYYY-MM-DD": { items:[{id,cat,amt,time,ts}], checked:bool } },
+      months:  {},                    // 预留
+      tasks:   { "YYYY-MM-DD": { list:[{t,done}] } },
+      theme:   "light" | "dark",
+      lastBackup: 时间戳,
+      logs:    [{mk, v, tag, ts}]     // 预算锁定日志，最多 12 条
+    }
+    每次记账/改预算即时 save()。数据只在本机，清缓存或换设备会丢。
+
+  【核心规则 —— 修改前务必看懂】
+    A 未来时间只可设置预算金额
+      未来日期不可记账、不可签到、不可查看明细（日历/柱状图/明细三处入口全部拦截）。
+      触碰未来日期 -> 提示「未来的时间只能设置预算金额」+ 自动展开月度预算面板。
+      判定函数 isFuture(k) = k > todayKey()（字符串比较，实时取系统时间，跨天自动生效）。
+      未来日期的 DOM 只带 data-future 属性，不带 data-day，点击委托据此拦截。
+    B 预算三档权限（见 budgetPerm(mk)）
+      当前月：未锁定 -> 可设，设完即锁(edits=1)
+              已锁定未用最终机会 -> 可再改 1 次(finalUsed=true)
+              已用尽 -> 禁用，显示「🔒 已锁定 · N 天后可改」，下月 1 日自动解锁
+      未来月：未预存 -> 可预存，存完标 preset
+              已预存 -> 禁用，显示「已预存」，到该月 1 日自动开放 1 次最终修改
+      过去月：不可修改
+      未设置的月自动沿用最近一次设置的数值（resolveBudget）
+    C 过去日期可点开回看/补记/改/删，不受限制
+    D 分类固定 5 个：早餐5 午餐12 晚餐10 交通2 其他1（CATS 常量）
+    E 累计结余 = Σ(当日预算 - 当日消费)，含未记账的日子（按全额结余计）
+    F 超支天数 = 当月有记录且总额 > 当日预算的天数
+
+  【已知取舍】
+    - 「今日任务」默认 3 条，来源视频截图，原文未读清，可自行增删
+    - confirm() 用于删除/改预算二次确认；localStorage 不可用时静默降级为内存态
+  ============================================================
+-->
+<meta data-page-node-id="QQyB3GeNBIHNNwYFqS0Ur8" content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport">
+<meta data-page-node-id="oXER1ontmPwhO4itWqSAFt" content="yes" name="apple-mobile-web-app-capable">
+<title data-page-node-id="VBEEAOTlSXrOfqH1kKdPnu" data-pnid-children="94HfUTWllqqVUgjpwdhdyQ">每日预算挑战 · 任务签到表</title>
+<style data-page-node-id="H0c1z0U1fKB25vQAYFNt6r" data-pnid-children="WiPJQfx5tWR0jNNYOLQ5fK">
+  :root{
+    --bg:#f4f6f9; --card:#ffffff; --ink:#1f2733; --sub:#7b879b; --faint:#a8b3c4;
+    --line:#e8edf4; --brand:#2f7ff0; --brand-dark:#1f68d6; --brand-soft:#eef5ff;
+    --gold:#f5a623; --gold-soft:#fff7e6; --ok:#22a06b; --ok-soft:#e8f7f0;
+    --bad:#e5484d; --bad-soft:#fdecec;
+    --radius:16px; --shadow:0 1px 3px rgba(31,39,51,.05),0 6px 18px rgba(31,39,51,.04);
+    --paper-a:#eef3f8; --paper-b:#f7f9fc;
+  }
+  [data-theme="dark"]{
+    --bg:#12161d; --card:#1b212b; --ink:#e8edf4; --sub:#939fb3; --faint:#6b7688;
+    --line:#2a323f; --brand:#4d93ff; --brand-dark:#2f7ff0; --brand-soft:#1c2a3f;
+    --gold:#f5b942; --gold-soft:#3a2f16; --ok:#35c08a; --ok-soft:#16301f; --bad:#ff6b70; --bad-soft:#3a1d1f;
+    --shadow:0 1px 3px rgba(0,0,0,.3); --paper-a:#1e2632; --paper-b:#232c39;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.55;padding-bottom:92px;transition:background .2s,color .2s}
+  .wrap{max-width:520px;margin:0 auto;padding:14px 14px 0}
+  .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px;margin-bottom:12px}
+
+  /* 顶部 */
+  .topbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}
+  .topbar h1{margin:0;font-size:19px;font-weight:700;letter-spacing:.3px}
+  .topbar h1 .badge{font-size:11.5px;font-weight:600;color:var(--ok);background:var(--ok-soft);padding:2px 7px;border-radius:20px;margin-left:6px;vertical-align:middle}
+  .sub-line{font-size:12px;color:var(--sub)}
+  .theme-btn{width:36px;height:36px;flex:none;border:none;border-radius:50%;background:var(--card);box-shadow:var(--shadow);font-size:16px;cursor:pointer;color:var(--ink)}
+
+  /* 1 预算总览 */
+  .card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .card-head h2{margin:0;font-size:15.5px;font-weight:700;display:flex;align-items:center;gap:6px}
+  .ghost-btn{border:1px solid var(--line);background:var(--brand-soft);color:var(--brand);font-size:12.5px;font-weight:600;padding:6px 11px;border-radius:20px;cursor:pointer;white-space:nowrap}
+  .hero-num{display:flex;align-items:baseline;gap:6px;margin:2px 0 12px}
+  .hero-num b{font-size:44px;line-height:1;font-weight:800;color:var(--ok);letter-spacing:-1px}
+  .hero-num b.bad{color:var(--bad)}
+  .hero-num span{font-size:13px;color:var(--sub)}
+  .hero-num .sup{font-size:15px;color:var(--sub);font-weight:600;margin-right:1px}
+  .bar-wrap{height:10px;background:var(--bg);border-radius:6px;overflow:hidden;margin-bottom:12px}
+  .bar-wrap i{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,#ffb648,#f5a623);transition:width .3s}
+  .bar-wrap i.over{background:linear-gradient(90deg,#ff8b8f,#e5484d)}
+  .triple{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .triple .t{background:var(--bg);border-radius:12px;padding:10px 6px;text-align:center}
+  .triple .t .v{font-size:17px;font-weight:700;line-height:1.3}
+  .triple .t .v small{font-size:11px;margin-right:1px}
+  .triple .t .k{font-size:11px;color:var(--sub);margin-top:2px;white-space:nowrap}
+  .v-ok{color:var(--ok)} .v-bad{color:var(--bad)} .v-brand{color:var(--brand)} .v-gold{color:var(--gold)}
+
+  /* 月度预算面板 */
+  .budget-panel{margin-top:12px;padding:12px;border-radius:14px;background:linear-gradient(160deg,var(--paper-a),var(--paper-b));border:1px solid var(--line)}
+  .bp-row{display:flex;align-items:center;gap:10px;padding:7px 0}
+  .bp-row .lbl{font-size:13.5px;color:var(--sub);flex:1;min-width:0}
+  .bp-row input{width:76px;flex:none;border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:14.5px;font-weight:700;text-align:center;outline:none;background:var(--card);color:var(--ink);font-family:inherit}
+  .bp-row input:focus{border-color:var(--brand)}
+  .bp-row input:disabled{background:var(--bg);color:var(--faint);cursor:not-allowed}
+  .lock-tag{flex:none;font-size:11.5px;color:var(--sub);background:var(--card);border:1px solid var(--line);padding:5px 9px;border-radius:20px;white-space:nowrap}
+  .bp-btn{flex:none;border:none;border-radius:10px;padding:8px 15px;font-size:13.5px;font-weight:700;background:var(--brand);color:#fff;cursor:pointer}
+  .bp-btn:disabled{background:var(--line);color:var(--faint);cursor:not-allowed}
+  .bp-btn.done{background:var(--ok-soft);color:var(--ok)}
+  .bp-sub{font-size:11.5px;color:var(--faint);padding:0 0 4px 0}
+  .bp-sec{font-size:12.5px;font-weight:700;color:var(--sub);margin:12px 0 2px;padding-top:10px;border-top:1px dashed var(--line)}
+  .bp-note{font-size:11.5px;color:var(--sub);line-height:1.75;margin:8px 0 0}
+  .bp-note b{color:var(--ink);font-weight:600}
+  .bp-log{font-size:11px;color:var(--faint);line-height:1.7;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);word-break:break-all}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .chip{font-size:11.5px;color:var(--sub);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:4px 10px}
+
+  /* 2 每日签到 */
+  .sign-top{display:flex;align-items:center;gap:12px}
+  .sign-btn{flex:1;border:none;border-radius:14px;padding:15px;font-size:16px;font-weight:700;cursor:pointer;background:var(--bg);color:var(--sub)}
+  .sign-btn.on{background:var(--ok-soft);color:var(--ok)}
+  .streak{flex:none;text-align:center;min-width:64px}
+  .streak b{display:block;font-size:30px;line-height:1;color:var(--gold);font-weight:800}
+  .streak span{font-size:11px;color:var(--sub)}
+  .week-head{display:grid;grid-template-columns:repeat(7,1fr);text-align:center;font-size:11px;color:var(--faint);margin:14px 0 6px}
+  .cal{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+  .cell{border:1px solid var(--line);border-radius:11px;min-height:46px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;cursor:pointer;background:var(--card);position:relative}
+  .cell.empty{border:none;background:transparent;cursor:default;min-height:0}
+  .cell .d{font-size:12.5px;color:var(--sub);font-weight:600}
+  .cell .amt{font-size:10.5px;font-weight:700}
+  .cell.ok{background:var(--ok-soft);border-color:transparent}
+  .cell.ok .d{color:var(--ok)} .cell.ok .amt{color:var(--ok)}
+  .cell.bad{background:var(--bad-soft);border-color:transparent}
+  .cell.bad .d{color:var(--bad)} .cell.bad .amt{color:var(--bad)}
+  .cell.today{border:2px solid var(--brand);background:var(--brand-soft)}
+  .cell.today .d{color:var(--brand);font-weight:800}
+  .cell.future{opacity:.38;cursor:not-allowed;background:var(--bg);border-color:transparent}
+  .cell.future .d{color:var(--faint)}
+  .cell .tick{position:absolute;top:3px;right:4px;font-size:8.5px;color:var(--ok)}
+  .cal-legend{display:flex;gap:14px;justify-content:center;margin-top:12px;font-size:11px;color:var(--sub)}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:3px;margin-right:4px;vertical-align:middle}
+  .dot.ok{background:var(--ok-soft);border:1px solid var(--ok)}
+  .dot.bad{background:var(--bad-soft);border:1px solid var(--bad)}
+  .dot.today{background:var(--brand-soft);border:1px solid var(--brand)}
+  .dot.future{background:var(--bg);border:1px solid var(--line)}
+
+  /* 3 消费记录 */
+  .quick{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:2px}
+  .quick button{flex:none;border:1px solid var(--line);background:var(--brand-soft);color:var(--brand);font-size:12.5px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer;white-space:nowrap}
+  .quick button:active{background:var(--brand);color:#fff}
+  .add-row{display:flex;gap:8px}
+  .add-row select,.add-row input{border:1px solid var(--line);border-radius:11px;padding:11px 10px;font-size:14.5px;outline:none;background:var(--card);color:var(--ink);font-family:inherit;min-width:0}
+  .add-row select{flex:0 0 96px;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--sub) 50%),linear-gradient(135deg,var(--sub) 50%,transparent 50%);background-position:calc(100% - 15px) 50%,calc(100% - 10px) 50%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:26px}
+  .add-row input{flex:1}
+  .add-row input:focus,.add-row select:focus{border-color:var(--brand)}
+  .add-row .go{flex:none;border:none;border-radius:11px;background:var(--brand);color:#fff;font-size:14.5px;font-weight:700;padding:0 16px;cursor:pointer}
+  .rec-list{margin-top:10px}
+  .rec{display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px dashed var(--line)}
+  .rec:last-child{border-bottom:none}
+  .rec .ic{width:38px;height:38px;flex:none;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:19px;background:var(--bg)}
+  .rec .mid{flex:1;min-width:0}
+  .rec .mid .n{font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rec .mid .tm{font-size:11px;color:var(--faint)}
+  .rec .m{font-size:16px;font-weight:700;flex:none}
+  .rec .del{flex:none;width:26px;height:26px;border:none;border-radius:50%;background:var(--bg);color:var(--faint);font-size:11px;cursor:pointer;line-height:1}
+  .rec .del:active{background:var(--bad-soft);color:var(--bad)}
+  .rec-total{display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:13px;color:var(--sub)}
+  .rec-total b{font-size:17px;color:var(--ink)}
+  .empty-tip{text-align:center;color:var(--faint);font-size:12.5px;padding:18px 0}
+
+  /* 4 今日任务 / 统计 */
+  .task{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px dashed var(--line);cursor:pointer}
+  .task:last-child{border-bottom:none}
+  .task .box{width:19px;height:19px;flex:none;border:2px solid var(--line);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff}
+  .task.done .box{background:var(--ok);border-color:var(--ok)}
+  .task .tx{font-size:14px;flex:1}
+  .task.done .tx{color:var(--faint);text-decoration:line-through}
+  .add-task{display:flex;gap:8px;margin-top:10px}
+  .add-task input{flex:1;border:1px solid var(--line);border-radius:11px;padding:10px 11px;font-size:14px;outline:none;background:var(--card);color:var(--ink);font-family:inherit}
+  .add-task button{flex:none;border:1px solid var(--line);background:var(--card);color:var(--sub);border-radius:11px;padding:0 14px;font-size:13.5px;cursor:pointer}
+
+  /* 5 本月统计 */
+  .bars{display:flex;align-items:flex-end;gap:3px;height:100px;margin-top:6px;overflow-x:auto}
+  .bc{flex:1 1 0;min-width:10px;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;cursor:pointer}
+  .bv{font-size:8px;color:var(--sub);margin-bottom:2px;white-space:nowrap}
+  .b{width:100%;border-radius:3px 3px 0 0;min-height:2px;background:var(--line)}
+  .b.ok{background:#8fd3b4} .b.bad{background:#f3a3a5} .b.today{background:var(--brand)}
+  .b.future{background:var(--line);opacity:.4}
+  .bc.future{cursor:not-allowed}
+  .bx{display:flex;gap:3px;margin-top:4px;overflow-x:auto}
+  .bx span{flex:1 1 0;min-width:10px;text-align:center;font-size:8px;color:var(--faint)}
+  .bx span.today{color:var(--brand);font-weight:700}
+  .bx span.future{opacity:.4}
+  .row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px dashed var(--line);cursor:pointer}
+  .row:last-child{border-bottom:none}
+  .row .day{width:60px;flex:none;font-size:11.5px;color:var(--sub)}
+  .row .day b{display:block;font-size:13.5px;color:var(--ink)}
+  .row .mid{flex:1;min-width:0}
+  .row .names{font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .track{height:6px;background:var(--bg);border-radius:4px;margin-top:5px;overflow:hidden}
+  .track i{display:block;height:100%;border-radius:4px;background:var(--ok)}
+  .track i.bad{background:var(--bad)}
+  .row .money{flex:none;font-size:15px;font-weight:700}
+  .row .money.bad{color:var(--bad)}
+  .row.future{opacity:.5;cursor:not-allowed}
+  .sum-line{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:12px;border-top:2px dashed var(--line);font-size:13.5px;color:var(--sub)}
+  .sum-line strong{font-size:21px;color:var(--brand)}
+
+  /* 6 设置 */
+  .tools{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+  .tool{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:10px;font-size:13px;color:var(--ink);cursor:pointer;font-family:inherit}
+  .tool.danger{color:var(--bad);border-color:var(--bad-soft)}
+  .foot{text-align:center;color:var(--faint);font-size:11.5px;padding:0 0 18px;margin:0}
+
+  /* 抽屉 */
+  .mask{position:fixed;inset:0;background:rgba(20,28,40,.45);opacity:0;pointer-events:none;transition:opacity .22s;z-index:30}
+  .mask.show{opacity:1;pointer-events:auto}
+  .sheet{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-radius:20px 20px 0 0;z-index:31;transform:translateY(102%);transition:transform .26s cubic-bezier(.3,.9,.3,1);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(20,28,40,.18)}
+  .sheet.show{transform:translateY(0)}
+  .sheet-inner{max-width:520px;margin:0 auto;width:100%;display:flex;flex-direction:column;max-height:88vh}
+  .sheet-head{padding:14px 16px 10px;border-bottom:1px solid var(--line);position:relative}
+  .sheet-head h3{margin:0;font-size:17px}
+  .sheet-head .dsub{font-size:12px;color:var(--sub);margin-top:2px}
+  .close-btn{position:absolute;top:12px;right:12px;width:30px;height:30px;border:none;border-radius:50%;background:var(--bg);font-size:15px;color:var(--sub);cursor:pointer;line-height:1}
+  .sheet-body{padding:12px 16px;overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch}
+  .sum3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+  .sum3 .x{background:var(--bg);border-radius:12px;padding:9px 5px;text-align:center}
+  .sum3 .x .v{font-size:17px;font-weight:700}
+  .sum3 .x .k{font-size:10.5px;color:var(--sub);margin-top:1px}
+  .sheet-foot{padding:10px 16px calc(14px + env(safe-area-inset-bottom));border-top:1px solid var(--line)}
+  .toast{position:fixed;left:50%;bottom:88px;transform:translate(-50%,10px);background:rgba(31,39,51,.93);color:#fff;font-size:13.5px;padding:9px 17px;border-radius:20px;opacity:0;pointer-events:none;transition:.22s;z-index:40;max-width:88%;text-align:center}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+  @media (max-width:360px){
+    .topbar h1{font-size:17px}
+    .hero-num b{font-size:38px}
+    .triple .t .v{font-size:15px}
+    .cell{min-height:42px}
+  }
+</style>
+</head>
+<body data-page-node-id="EWLbLwAGzg0GBkxMf4Gcst">
+<div data-page-node-id="UWs7ECZxbkz8xH14m0qpyC" class="wrap">
+
+  <div data-page-node-id="l974kTRIsjVz2aj0eN5c8G" class="topbar">
+    <div data-page-node-id="omtp8Kc3w8hp3snSxxwBz9">
+      <h1 data-page-node-id="SLdZdOwZyTyhATaHLN6rtU"><!--pnid:wbhVl14wnBhqKjLchgCDyZ-->每日预算挑战<span data-page-node-id="bcKNoKEIECTQf5rDLvaN3D" class="badge" id="topBadge"><!--pnid:YcSasqvNWFpdEy5ameO7AL-->¥30/天</span></h1>
+      <div data-page-node-id="SZj17rLl4YdhU4jp3oQ9rA" class="sub-line" id="topSub"><!--pnid:gofjzRFkumXgmS4ibSS0BH-->—</div>
+    </div>
+    <button data-page-node-id="WHBAW9WsnL6UZmTUuHU2gU" class="theme-btn" id="themeBtn" title="切换配色"><!--pnid:sYSKf2fIW9lgE67yEbyINq-->🌙</button>
+  </div>
+
+  <!--pnid:gwHmcZ1okrAslrAyZUnArZ--><!-- 1 预算总览 -->
+  <div data-page-node-id="yeThK3DJIhzsyM4foHduvj" class="card">
+    <div data-page-node-id="BfZiCZMTKDURFnreiUVAhs" class="card-head">
+      <h2 data-page-node-id="JPuyceUvoFdwyMPeVf7wj9"><!--pnid:4clb7mjZYX0T2M8EEiUHgo-->💰 预算总览</h2>
+      <button data-page-node-id="v7aScWxHuuPJdU6dsw3CoK" class="ghost-btn" id="toggleBudget"><!--pnid:yh6Rxo8e5Ggh3T2L3W7uBN-->⚙ 月度预算</button>
+    </div>
+    <div data-page-node-id="0I9BiltA3LgtstPsZUqpeU" class="hero-num" id="heroNum">
+      <span data-page-node-id="StyrOikaCQkDW3zeMjEMAp" class="sup"><!--pnid:hhG1nw2dSzVrCgTaqP7nVJ-->¥</span><b data-page-node-id="kQJ8YbaSZvma8vwU2uvEy5" id="heroVal"><!--pnid:BxFnFu5yGhdDsXTEX1HIJs-->0</b><span data-page-node-id="wTvuIQyaerj4pcUAWbNq4O" id="heroTip"><!--pnid:WY4OroiK5J6YwykgePbAbR-->元 · 今日剩余</span>
+    </div>
+    <div data-page-node-id="K95RzlUp5Ix4PsOuNctAhx" class="bar-wrap"><i data-page-node-id="jUVOTvmME2CGO0lVyYjIYy" id="heroBar" style="width:0%"></i></div>
+    <div data-page-node-id="OH9BxCLaqM6t6LT6C4FmUW" class="triple">
+      <div data-page-node-id="33XXhlLRw7nVN3nGQzN1hj" class="t"><div data-page-node-id="fCJCt6SF1gVAnrvbrWI4vM" class="v v-brand" id="tToday"><!--pnid:W9WoeOSihbbqkgOqGXV8VT-->¥0</div><div data-page-node-id="jYSohFnubnwADRhGgTYyTS" class="k"><!--pnid:DbjRm0zbwJLelOu1Pw325H-->今日已花</div></div>
+      <div data-page-node-id="xVft8TRlo5l69ScMALDmWa" class="t"><div data-page-node-id="bY8PuDOLlsrz7gWEZKp0ak" class="v v-ok" id="tLeft"><!--pnid:0pVLti3UkgDaMGe3ybXoYK-->¥0</div><div data-page-node-id="NEnTiKhitT1dtuv6QQl9Lo" class="k"><!--pnid:R1FGdIy1m2HL8X77zmsTlx-->累计结余</div></div>
+      <div data-page-node-id="JuRqcL8kf4rIqScY00oCcM" class="t"><div data-page-node-id="uL9PD8guzPXPPNZoYOIIYy" class="v v-bad" id="tOver"><!--pnid:YikGv13ym0yuLySNIo8t8a-->0 天</div><div data-page-node-id="zci7fxk2bqKpEJKbxQ2iGz" class="k"><!--pnid:954NBjEDtoGX6bC4AB6meH-->超支天数</div></div>
+    </div>
+
+    <!--pnid:iRzENFomwhtMlBSWVYAcvP--><!-- 月度预算面板 -->
+    <div data-page-node-id="9TiDoLRv0usiCN3jgYO523" class="budget-panel" id="budgetPanel" style="display:none">
+      <div data-page-node-id="O7NVh2t9YxEihTrW1w0bGQ" class="bp-row">
+        <span data-page-node-id="twB21rKSARLLOKHRK1mPpj" class="lbl" id="curMonthLbl"><!--pnid:l6GHVNVUNt5M25f6ctj7NC-->本月预算</span>
+        <input data-page-node-id="9az5h1JfRTxlBS7L7TDv84" id="curBudgetInput" inputmode="decimal" min="0" step="1" type="number">
+        <span data-page-node-id="W7g5XfzeGPb7juoPJ76rdk" class="lock-tag" id="curLockTag"><!--pnid:9stJLnJ2RyWTV71CtB75ws-->🔒 已锁定</span>
+      </div>
+      <div data-page-node-id="390qDAofCVeUPFfSsueWD9" class="bp-sec"><!--pnid:b4cc0kQUQm1bXlnMxHZvxK-->未来月份预存</div>
+      <div data-page-node-id="VAAOdR7CfjQ2MwNTcMvFGd" id="futureRows"></div>
+      <div data-page-node-id="nQQOl8Kk4i1LjxPZKeP4ce" class="bp-note"><!--pnid:pabAs51fky4oiTs1CxgDCw-->
+        · <b data-page-node-id="SNKnEzi4JsPw5ZkWuoGjPH"><!--pnid:oyYrO2P2gT9CxNAT15s2i6-->冷却式锁定</b><!--pnid:eTRnwZ2pvY5DInxqbwZPfN-->：本月预算锁定后当月仅剩 1 次修改机会，用完须等下月 1 日<br data-page-node-id="dQQs0IeQK3TvmBm9V9H19W"><!--pnid:OmVCbSgeMPFehCmyLtDsjK-->
+        · <b data-page-node-id="oZ8lbo943trOeeD6HL0j2P"><!--pnid:P37dvyPq72MvRYCPUobHB8-->预存规则</b><!--pnid:O1tmuyBjZtWV4gbCz14yoR-->：未来月份各自独立保存，设置一次即标记为「预存」，生效当月仍有 1 次最终修改机会<br data-page-node-id="9NsCUtIghKz4aqFLqF6UFJ"><!--pnid:dJzDvSpKtzfvHDpduSIGky-->
+        · <b data-page-node-id="UEepTxWylpjv0P8yxz0ViW"><!--pnid:GRBqNH5uk3YYEukfkSUkU3-->自动沿用</b><!--pnid:5Or7ayjt8rdXESNAjbOyEh-->：未设置的月份自动沿用最近一次设置的数值
+      </div>
+      <div data-page-node-id="PswYqBYUBHHm8KYsDRxq1E" class="chips">
+        <span data-page-node-id="2G4CF4AyLT53HRYGBiH9K5" class="chip"><!--pnid:sdKo5aVdgIMwdpMpq635F3-->25 紧缩</span><span data-page-node-id="LEyAsWctoAdBWATuhnSJut" class="chip"><!--pnid:apBnxD46UZTxjFMtNpjY60-->30 标准</span><span data-page-node-id="MRQ8YEYuGKSZeha0H78ZU9" class="chip"><!--pnid:NP9lvSzl3UDA5U4uPoRmzc-->40 宽松</span><span data-page-node-id="2JI43dZFL0pXnd8aMoPsu7" class="chip"><!--pnid:8CkZkt2rSKEImo62XYkD7u-->50 加餐</span>
+      </div>
+      <div data-page-node-id="8ZM7eM6PaOpOQC6cFzo5vp" class="bp-log" id="bpLog"></div>
+    </div>
+  </div>
+
+  <!--pnid:jJYfB7BQ50uInp3Yds22LN--><!-- 2 每日签到 -->
+  <div data-page-node-id="ZGP9oQzhQb6WmVx3OOai9X" class="card">
+    <div data-page-node-id="Yfjk0aM13LOOLlYusxgxcV" class="card-head">
+      <h2 data-page-node-id="Z8aR3GTJFdEDrwzNGyImJd"><!--pnid:l1Xh8rXYyBuvOzTIEua2Nn-->📅 每日签到</h2>
+      <button data-page-node-id="aAz0WzfzW73mnPCNewkYz5" class="ghost-btn" id="toToday"><!--pnid:jQyc0Tfhtc9rYpqPv20xl6-->回到今天</button>
+    </div>
+    <div data-page-node-id="5YiF9HwAXQWFRBD8TthC5J" class="sign-top">
+      <button data-page-node-id="1rKlr4syUyuBn3BrNKyK9f" class="sign-btn" id="signBtn"><!--pnid:ag1MdSWIoRyuCgXzz8BoFV-->签到</button>
+      <div data-page-node-id="7pllLSWQNjhY4cmThA4FGf" class="streak"><b data-page-node-id="ZhVMXnjGwhQakAJEv7H1He" id="streakNum"><!--pnid:jqO96aAWlZiUwmHpnWRnqR-->0</b><span data-page-node-id="rFaMvwbLcZAfD69kQuq920"><!--pnid:RC7kt3fG4IUMTtzOPdZZ7U-->连续签到(天)</span></div>
+    </div>
+    <div data-page-node-id="E22S8kmdhDFs6FprHmY4yH" class="week-head"><span data-page-node-id="gbbpf74tJ3vnZ03oHIcFo9"><!--pnid:Ugf2MkrQOnsKxIDmn7lavt-->一</span><span data-page-node-id="l2pe9FVYYy9PcLaTO20a6w"><!--pnid:VNAYrw5FOONbK9hbQ3eA5F-->二</span><span data-page-node-id="mumwovIYa5AlCWr8RjgOuC"><!--pnid:UE8pGHexuG9VnTiJGiI1DZ-->三</span><span data-page-node-id="GCw6usVNOeNl7zMUbITOSJ"><!--pnid:uxEfyLxt5oMbqAnMTDe5ff-->四</span><span data-page-node-id="1pI8oKYsPGmIINUELEWXIT"><!--pnid:usB1vLcOLPBfWdG0d3KPUh-->五</span><span data-page-node-id="yJ2ml48Tu9QAr2BKrSKz7c"><!--pnid:4BWEJJKvsGZjVLHfCUFn2y-->六</span><span data-page-node-id="XCCLko6AJSvlKUwhm70qWi"><!--pnid:DlDrST0bfCChTdQAgxVSGK-->日</span></div>
+    <div data-page-node-id="bon576Fwn4wcYCIWJVYwbf" class="cal" id="cal"></div>
+    <div data-page-node-id="R5veNMuxpFsLEW947sCqES" class="cal-legend">
+      <span data-page-node-id="S0wyRqZ1AaEX9g8SEzSF5e"><i data-page-node-id="Ldn5YfahFDj4BlmS8kcHHE" class="dot ok"></i><!--pnid:XBkugUctrmtUVLMneHhOYd-->达标</span>
+      <span data-page-node-id="ycBffnwvXFHlId7R6OJTPQ"><i data-page-node-id="kVVG04hL556GNcwG15o4Ew" class="dot bad"></i><!--pnid:4Btv1ifr6jr70CvwvCQQtj-->超支</span>
+      <span data-page-node-id="g5i1oU4SQ5DAgWadWIvjCo"><i data-page-node-id="iUNrhD9r4nxQ6jnjiODIqi" class="dot today"></i><!--pnid:YTcmviLwHYty2lGvWMWeip-->今天</span>
+      <span data-page-node-id="mpKHVJCMBJcsw1If5ISkkK"><i data-page-node-id="10ttTXEWLxzDUM2ooHReiW" class="dot future"></i><!--pnid:XITc2SS2jnTQikbVHZovDw-->未到（锁定）</span>
+    </div>
+  </div>
+
+  <!--pnid:9SLnZZB7IXR0uKgCcFBsMn--><!-- 3 消费记录 -->
+  <div data-page-node-id="hcujFZwHMhV3ZxwZ4gbHT3" class="card">
+    <div data-page-node-id="pvu6evLeOyrwhZWKBCiIMc" class="card-head">
+      <h2 data-page-node-id="BO9eBZyBKOF0R1olhJRfGO"><!--pnid:UhMZLUs68EstHSi5199gR5-->🧾 消费记录</h2>
+      <span data-page-node-id="kJFhAznl3pmY3ICKbsZHww" class="sub-line" id="recTag"><!--pnid:UjS2gBLjdmPxJCipc0C2tf-->每花一笔马上记</span>
+    </div>
+    <div data-page-node-id="cIxsVOOIofO44JtmTjKW5M" class="quick" id="quick"></div>
+    <div data-page-node-id="K1XHmpwg49ubmJxSlKzYC2" class="add-row">
+      <select data-page-node-id="qrrfnupmdyektWLRFZEXtE" id="addCat"></select>
+      <input data-page-node-id="vQCVDnbr1udyRl93TBpdpV" id="addAmt" inputmode="decimal" min="0" placeholder="金额" step="0.01" type="number">
+      <button data-page-node-id="Z6fgnDh38dfdK2v2pmxzHq" class="go" id="addBtn"><!--pnid:vuERlx2lxWPduoaUr6uVwW-->记一笔</button>
+    </div>
+    <div data-page-node-id="Shgu8YUtqEq1mk8Qw9nabb" class="rec-list" id="recList"></div>
+    <div data-page-node-id="ealFOLeFFeLJsZAxU06KDr" class="rec-total"><span data-page-node-id="vTxvYeCePyogUSVKTGor37" id="recSumTip"><!--pnid:EMf033vFBwE3IkOe4zfZUx-->当日合计</span><span data-page-node-id="yYvOs2zWfR2qkGVnncCDwk"><b data-page-node-id="2ZPXUX73LGlMdMKtRUO0Ky" id="recSum"><!--pnid:98UoPffj21FZEH2XEGUNkF-->¥0.00</b></span></div>
+  </div>
+
+  <!--pnid:9sVtlBPmwdmsbOlDKUxfDI--><!-- 4 今日任务 -->
+  <div data-page-node-id="zNoFVJB1dMHUrqL4gcaBGp" class="card">
+    <div data-page-node-id="sRF49iEiQFaoN3nqIkMdxN" class="card-head">
+      <h2 data-page-node-id="STRq9HAA2KPIgzdsfDVbUm"><!--pnid:Qv48glUngFeA8HRjxWv43z-->✅ 今日任务</h2>
+      <span data-page-node-id="nUbuVxYL321M5JuLBekiR3" class="sub-line"><!--pnid:A8IfQBjcTUZesiO8vq4RbL-->完成打勾，每天重置</span>
+    </div>
+    <div data-page-node-id="GKEtDd4IqOuPXlhEir6rtX" id="taskList"></div>
+    <div data-page-node-id="nqsaSXYspzBMlv0AaOA3h4" class="add-task">
+      <input data-page-node-id="XcXpYxSnGi5asEIxDaEscx" id="newTask" placeholder="加一条今天的任务，如 不点外卖" type="text">
+      <button data-page-node-id="dCD4EUpE7moSAybbi0odXn" id="addTask"><!--pnid:HOqWXroNAcjpk8puVOX4SU-->添加</button>
+    </div>
+  </div>
+
+  <!--pnid:MaChu53CkQw8FwZMRjdviD--><!-- 5 本月统计 -->
+  <div data-page-node-id="9tbgNXOssKOxR8uGqTiIa1" class="card">
+    <div data-page-node-id="2odkRr5CKMKIR5rHzMCvBh" class="card-head">
+      <h2 data-page-node-id="hP1nNyVt1grW4yJtWK7gt1" id="statTitle"><!--pnid:K9f1DSMpJq75qSIsxoWy2D-->📈 本月每日消费</h2>
+      <span data-page-node-id="YcvQ2Da77urOxSv5XjQA00" class="sub-line" id="statRange"><!--pnid:31Y0EoebwJjca4PPD5vnEd-->—</span>
+    </div>
+    <div data-page-node-id="1iOMgtUXrEDJikkjeEuX6t" class="bars" id="bars"></div>
+    <div data-page-node-id="gxQyrdfYG5fSuLZaFSKac6" class="bx" id="barX"></div>
+    <div data-page-node-id="1LjjcMUQimP32NBjxzxXp0" class="sum-line"><span data-page-node-id="Spdom4UShAjRMZfdkG0keI"><!--pnid:xbPY30g8QM6qGUWjM1e4q3-->本月单日消费总计</span><strong data-page-node-id="g6c5FKHRujS3WjEVU4hA70" id="mTotal"><!--pnid:eg2q8PHh2OYiZsQGRIvCfX-->¥0.00</strong></div>
+  </div>
+
+  <div data-page-node-id="blG12BdBaT50KOJZuMaSet" class="card">
+    <div data-page-node-id="IlTuZZ96ZqKp1to8bxmyvA" class="card-head"><h2 data-page-node-id="uSiW6SAwcNNIQWn3bqaBXE"><!--pnid:1xhFU3LRjwhYzmlIc4SoGN-->📋 本月单日明细</h2><span data-page-node-id="nAaWdXGmnRj8BMQh6hwIPx" class="sub-line"><!--pnid:k37qC6RLkM67DUca5tyWZC-->点一行回看当天</span></div>
+    <div data-page-node-id="UPNJ7NqZDohk8D909O3bO5" id="dayList"></div>
+  </div>
+
+  <!--pnid:1RyBRpz0oykiiUlfVsrqVV--><!-- 6 数据 -->
+  <div data-page-node-id="2P5paHxpY4RzslcGPkKNbD" class="card">
+    <div data-page-node-id="RNHgeNhG8lWNdRhhW0GEWj" class="card-head"><h2 data-page-node-id="RidmcJcKcUyUCzxGCoWFE0"><!--pnid:qRNCp1Yadbcs3WHugVp6b4-->💾 数据与备份</h2></div>
+    <div data-page-node-id="xnVzHVxMDXmFWL6zXpXUpJ" class="bp-note" id="dataStatus" style="margin:0 0 10px"></div>
+    <div data-page-node-id="ulxYzYIFMC2cghXKKrVYj7" class="tools">
+      <button data-page-node-id="LPzX3JTrAsHp6QINxnZ76I" class="tool" id="btnJson"><!--pnid:pIoXuAibr05EpBr8qS01L9-->备份数据 (JSON)</button>
+      <button data-page-node-id="XOHwSjcI2inqzY5e9at44I" class="tool" id="btnImport"><!--pnid:y8o8jkGdNI67kZlBhxQvFp-->恢复数据</button>
+      <button data-page-node-id="2NTVVaJupUJ3DQeZqFNshZ" class="tool" id="btnCsv"><!--pnid:6iTee9rlh601FQ1uDbt5Ab-->导出本月 (CSV)</button>
+      <button data-page-node-id="sXqzzTbyg1zDwemLcBuIt2" class="tool danger" id="btnTest"><!--pnid:IeqYM3Gu9R2kMMBbADvWiH-->载入演示数据</button>
+    </div>
+    <input data-page-node-id="Vyn4PQ2ISANlrIiw0T9nzW" accept="application/json,.json" id="fileInput" type="file" style="display:none">
+  </div>
+
+  <p data-page-node-id="P7Qv4GmjsHwhjEsiTgC8uC" class="foot"><!--pnid:5bQdtYK90yKBOqb9r0qaM5-->数据只保存在这台设备的浏览器里 · 换设备前记得先备份</p>
+</div>
+
+<!--pnid:1X8zcFBaHQ9ozE6YcxQwP7--><!-- 单日抽屉 -->
+<div data-page-node-id="pU7FRJJ0nmyfS1gdXbz6iV" class="mask" id="mask"></div>
+<div data-page-node-id="sC59OfSE5vfAYPwEYDAmOP" class="sheet" id="sheet">
+  <div data-page-node-id="EuPvIvBXBwmv1NvDToLO9g" class="sheet-inner">
+    <div data-page-node-id="yAlbWYlQqoV5M8OrSU6CTa" class="sheet-head">
+      <h3 data-page-node-id="whlRVXvnlqPn4d9EZ5zo8m" id="sheetTitle"><!--pnid:38Ta5Ai4pu9Lz9UbwUtkrt-->—</h3>
+      <div data-page-node-id="o6ZmO7Bi9cxGlUMTSNLr60" class="dsub" id="sheetSub"><!--pnid:7TfIpEUPauJxpWuFlXpNZW-->—</div>
+      <button data-page-node-id="6fU8wLQhFdQo5WTI4sB6vZ" class="close-btn" id="closeSheet"><!--pnid:nl9OQuE2BV1OJTjjh6pkh1-->✕</button>
+    </div>
+    <div data-page-node-id="MAOHccMxtJAb9DxbR8bsNn" class="sheet-body">
+      <div data-page-node-id="JTwuK2jJVx9TTXYpyHrAk0" class="sum3">
+        <div data-page-node-id="b02GeRPSffh4bS8jz6AvE1" class="x"><div data-page-node-id="ml5ekVchh5fZB9sRNsfhiI" class="v" id="dTotal"><!--pnid:Nq5LQwL7GaZ6uJfdGd3QJx-->¥0.00</div><div data-page-node-id="5FhmWSx3HaScFA3vManxga" class="k"><!--pnid:CD5R7fSBaogDdHg8pm8vwG-->当天合计</div></div>
+        <div data-page-node-id="czwyQw0k5gHv1XeLCd7x4h" class="x"><div data-page-node-id="cgGdsv0tCjI7Y1Fgl3rzdq" class="v" id="dDiff"><!--pnid:PKtvml6J84lEn9Hq4bTcUi-->¥0.00</div><div data-page-node-id="n4nISuTZZ2akGqxi1E30gO" class="k"><!--pnid:VffgiNkJCS9qPrcLSfBr0J-->距预算</div></div>
+        <div data-page-node-id="hDzJ2hgb3VF79WOw59yhy4" class="x"><div data-page-node-id="bbSOAA5yKFfpqoqoHWbBjK" class="v" id="dCount"><!--pnid:HxHMjksgZCGvdrPPxNOKyZ-->0</div><div data-page-node-id="wmBXQxrAm8pj8zVCwsuaUu" class="k"><!--pnid:yvPBAGiYjYmyyHeDeAITGY-->笔数</div></div>
+      </div>
+      <div data-page-node-id="irAtVLTxWwsEz8itTzcrlc" id="dCheckWrap" style="margin-bottom:12px"></div>
+      <div data-page-node-id="prcDXFJDz3bYKN4lfCyyD1" class="quick" id="dQuick"></div>
+      <div data-page-node-id="n7BZIR7AlPxW5LStNNVTXf" class="add-row">
+        <select data-page-node-id="2yBC6313Fjc9zj5lz1Ccl3" id="dCat"></select>
+        <input data-page-node-id="AKyxdYlVrjqRDNoIApXTK0" id="dAmt" inputmode="decimal" min="0" placeholder="金额" step="0.01" type="number">
+        <button data-page-node-id="DU4l57dC1b1sl0hieO2sw6" class="go" id="dAdd"><!--pnid:cGw7kIsJvathRgeBs2KAGO-->记一笔</button>
+      </div>
+      <div data-page-node-id="1gglC9ywVNcCw0HwSTIhZ5" class="rec-list" id="dList"></div>
+    </div>
+    <div data-page-node-id="6s2aEXCPFY5LZCoobmSKDw" class="sheet-foot">
+      <button data-page-node-id="IH8MqJJqF8nJmRNzJrcaov" class="tool danger" id="dClear" style="width:100%"><!--pnid:3Jg3yC7wutiTQaVeo8mJal-->删除这一天的全部记录</button>
+    </div>
+  </div>
+</div>
+
+<div data-page-node-id="B9JhUpduXCgoaNT0S7o9lB" class="toast" id="toast"></div>
+
+<script data-page-node-id="CD7HQL4d8jvmJrI7qXhbrR" data-pnid-children="aLK03uwJidRjLuSDWXJdeS">
+(function () {
+  'use strict';
+
+  var KEY = 'daily30_budget_v2';
+  var CATS = [
+    { n: '早餐', i: '🥐', p: 5 },
+    { n: '午餐', i: '🍜', p: 12 },
+    { n: '晚餐', i: '🍚', p: 10 },
+    { n: '交通', i: '🚌', p: 2 },
+    { n: '其他', i: '📦', p: 1 }
+  ];
+  var DEFAULT_TASKS = ['今天花钱不超过预算', '不冲动下单，想买先放 24 小时', '记账不漏笔'];
+  var WEEK = ['日', '一', '二', '三', '四', '五', '六'];
+
+  var state = load();
+  var view = null;
+  var openDate = null;
+
+  /* ============ 数据层 ============ */
+  function load() {
+    var def = { budgets: {}, days: {}, months: {}, tasks: {}, theme: 'light', lastBackup: 0, logs: [] };
+    try {
+      var raw = localStorage.getItem(KEY);
+      if (!raw) return def;
+      var o = JSON.parse(raw) || {};
+      return {
+        budgets: o.budgets && typeof o.budgets === 'object' ? o.budgets : {},
+        days: o.days && typeof o.days === 'object' ? o.days : {},
+        months: o.months && typeof o.months === 'object' ? o.months : {},
+        tasks: o.tasks && typeof o.tasks === 'object' ? o.tasks : {},
+        theme: o.theme === 'dark' ? 'dark' : 'light',
+        lastBackup: typeof o.lastBackup === 'number' ? o.lastBackup : 0,
+        logs: Array.isArray(o.logs) ? o.logs : []
+      };
+    } catch (e) { return def; }
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); }
+    catch (e) { toast('保存失败，浏览器存储可能已满'); }
+  }
+
+  function num(v) { var n = parseFloat(v); return isFinite(n) && n > 0 ? n : 0; }
+  function money(n) { return '¥' + (Math.round(n * 100) / 100).toFixed(2); }
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  function ymKey(y, m) { return y + '-' + pad(m); }
+  function ymd(y, m, d) { return y + '-' + pad(m) + '-' + pad(d); }
+  function nowDate() { var d = new Date(); return { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() }; }
+  function todayKey() { var t = nowDate(); return ymd(t.y, t.m, t.d); }
+  function curMonthKey() { var t = nowDate(); return ymKey(t.y, t.m); }
+  function daysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
+  function isFuture(k) { return k > todayKey(); }
+  function cnDate(k) { return parseInt(k.slice(5, 7), 10) + '月' + parseInt(k.slice(8, 10), 10) + '日'; }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function toast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg; t.classList.add('show');
+    clearTimeout(t._t);
+    t._t = setTimeout(function () { t.classList.remove('show'); }, 2000);
+  }
+  function catOf(name) {
+    for (var i = 0; i < CATS.length; i++) if (CATS[i].n === name) return CATS[i];
+    return { n: name || '其他', i: '📦', p: 1 };
+  }
+
+  /* ---------- 月度预算：锁定 / 预存 ---------- */
+  // 预算档案：budgets['YYYY-MM'] = { value, locked, edits, preset, presetAt, finalUsed }
+  function bRec(mk) {
+    if (!state.budgets[mk]) {
+      state.budgets[mk] = { value: null, locked: false, edits: 0, preset: false, presetAt: 0, finalUsed: false };
+    }
+    return state.budgets[mk];
+  }
+  // 最近一次设置过的数值（沿用它）
+  function resolveBudget(mk) {
+    var r = state.budgets[mk];
+    if (r && typeof r.value === 'number') return r.value;
+    var keys = Object.keys(state.budgets).filter(function (k) {
+      return state.budgets[k] && typeof state.budgets[k].value === 'number' && k <= mk;
+    }).sort();
+    if (keys.length) return state.budgets[keys[keys.length - 1]].value;
+    var all = Object.keys(state.budgets).filter(function (k) {
+      return state.budgets[k] && typeof state.budgets[k].value === 'number';
+    }).sort();
+    if (all.length) return state.budgets[all[0]].value;
+    return 30;
+  }
+  function monthBudget(mk) { return resolveBudget(mk); }
+
+  // 权限判定
+  function budgetPerm(mk) {
+    var cur = curMonthKey(), today = todayKey(), r = bRec(mk);
+    if (mk === cur) {
+      if (!r.locked) return { can: true, mode: 'init', hint: '设置后立即锁定，当月仅剩 1 次修改机会' };
+      if (!r.finalUsed) return { can: true, mode: 'final', hint: '这是当月最后 1 次修改机会' };
+      var t = nowDate();
+      var daysLeft = daysInMonth(t.y, t.m) - t.d + 1;
+      return { can: false, mode: 'locked', hint: '🔒 已锁定 · ' + daysLeft + ' 天后可改' };
+    }
+    if (mk > cur) {
+      var toSet = r.preset ? 1 : 0;
+      if (!r.preset) return { can: true, mode: 'preset', hint: '设置一次即锁定，生效当月仍有 1 次最终修改机会' };
+      var monthStart = mk + '-01';
+      if (today >= monthStart) return { can: true, mode: 'monthFinal', hint: '生效当月，这是最后 1 次修改机会' };
+      return { can: false, mode: 'presetLocked', hint: '🔒 已预存，' + mk.slice(5, 7).replace(/^0/, '') + '月上line后再改一次' };
+    }
+    return { can: false, mode: 'past', hint: '🔒 已过期，不可修改' };
+  }
+
+  function logBudget(mk, v, tag) {
+    var t = new Date();
+    var ts = (t.getMonth() + 1) + '月' + t.getDate() + '日 ' + pad(t.getHours()) + ':' + pad(t.getMinutes());
+    state.logs = state.logs || [];
+    state.logs.unshift({ mk: mk, v: v, tag: tag, ts: ts });
+    if (state.logs.length > 12) state.logs.length = 12;
+  }
+
+  function setBudget(mk, v, isFinal) {
+    var r = bRec(mk);
+    r.value = Math.round(v * 100) / 100;
+    var cur = curMonthKey();
+    if (mk > cur) {
+      if (!r.preset) { r.preset = true; r.presetAt = Date.now(); logBudget(mk, r.value, '预存'); }
+      else { r.finalUsed = true; r.locked = true; logBudget(mk, r.value, '修改'); }
+    } else {
+      if (!r.locked) { r.locked = true; r.edits = 1; logBudget(mk, r.value, '锁定'); }
+      else { r.finalUsed = true; r.edits = 2; logBudget(mk, r.value, '最终修改'); }
+    }
+  }
+
+  /* ============ 当天数据 ============ */
+  function getDay(k) {
+    if (!state.days[k]) state.days[k] = { items: [], checked: false };
+    if (!state.days[k].items) state.days[k].items = [];
+    return state.days[k];
+  }
+  function dayTotal(k) {
+    var it = getDay(k).items, s = 0;
+    for (var i = 0; i < it.length; i++) s += num(it[i].amt);
+    return Math.round(s * 100) / 100;
+  }
+
+  function monthData(y, m) {
+    var n = daysInMonth(y, m), mk = ymKey(y, m), b = monthBudget(mk);
+    var list = [], total = 0, over = 0, ok = 0, max = 0, spentAll = 0;
+    for (var d = 1; d <= n; d++) {
+      var k = ymd(y, m, d), rec = state.days[k];
+      var has = rec && rec.items && rec.items.length;
+      var t = has ? dayTotal(k) : 0;
+      if (has) {
+        list.push({ key: k, d: d, total: t, count: rec.items.length, items: rec.items, checked: !!rec.checked });
+        total += t;
+        if (t > b) over++; else ok++;
+        if (t > max) max = t;
+      }
+    }
+    return { days: list, total: Math.round(total * 100) / 100, over: over, ok: ok, max: max, n: n, budget: b };
+  }
+
+  // 累计结余 = Σ(当日预算 - 当日消费)，含未记账的日子（全额结余）
+  function cumulativeLeft(y, m) {
+    var t = nowDate(), n = daysInMonth(y, m), b = monthBudget(ymKey(y, m)), sum = 0;
+    var last = (y === t.y && m === t.m) ? t.d : ((y < t.y || (y === t.y && m < t.m)) ? n : 0);
+    for (var d = 1; d <= last; d++) sum += b - dayTotal(ymd(y, m, d));
+    return Math.round(sum * 100) / 100;
+  }
+
+  function streak() {
+    var c = 0, d = new Date();
+    // 今天没签就从昨天开始数
+    if (!getDay(todayKey()).checked) d.setDate(d.getDate() - 1);
+    for (var i = 0; i < 400; i++) {
+      var k = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+      var r = state.days[k];
+      if (r && r.checked) { c++; d.setDate(d.getDate() - 1); }
+      else break;
+    }
+    return c;
+  }
+
+  /* ============ 渲染 ============ */
+  function renderAll() { renderTop(); renderOverview(); renderBudgetPanel(); renderSign(); renderRec(); renderTasks(); renderStats(); renderDayList(); renderData(); }
+
+  /* ---------- 保存状态 ---------- */
+  function statCounts() {
+    var days = 0, items = 0;
+    Object.keys(state.days).forEach(function (k) {
+      var r = state.days[k];
+      if (r && r.items && r.items.length) { days++; items += r.items.length; }
+    });
+    return { days: days, items: items };
+  }
+  function backupText() {
+    var lb = state.lastBackup || 0;
+    if (!lb) return '还没备份过';
+    var d = Math.floor((Date.now() - lb) / 86400000);
+    if (d <= 0) return '今天已备份';
+    if (d === 1) return '昨天备份过';
+    return d + ' 天前备份过';
+  }
+  function renderData() {
+    var c = statCounts();
+    var el = document.getElementById('dataStatus');
+    if (!el) return;
+    var stale = !state.lastBackup || (Date.now() - state.lastBackup) > 7 * 86400000;
+    el.innerHTML = '每次记账都已自动保存到这台设备 · 已存 <b>' + c.days + '</b> 天 / <b>' + c.items + '</b> 笔 · ' +
+      '<span style="color:' + (stale ? 'var(--gold)' : 'var(--ok)') + '">' + backupText() + '</span>' +
+      (stale && c.items > 0 ? '<br><span style="color:var(--gold)">⚠ 建议点「备份数据」导一份，清缓存或换设备就不怕丢了</span>' : '');
+  }
+
+  function renderTop() {
+    var t = nowDate(), mk = curMonthKey(), b = monthBudget(mk);
+    document.getElementById('topSub').textContent =
+      t.y + '-' + pad(t.m) + '-' + pad(t.d) + ' 星期' + WEEK[new Date(t.y, t.m - 1, t.d).getDay()] + ' · 本月预算 ¥' + b + '/天';
+    document.getElementById('topBadge').textContent = '¥' + b + '/天';
+    document.getElementById('statTitle').textContent = '📈 ' + t.m + ' 月每日消费';
+    document.getElementById('statRange').textContent = t.y + '年' + t.m + '月';
+  }
+
+  function renderOverview() {
+    var t = nowDate(), b = monthBudget(curMonthKey());
+    var spent = dayTotal(todayKey());
+    var left = Math.round((b - spent) * 100) / 100;
+    var hv = document.getElementById('heroVal');
+    hv.textContent = Math.abs(left).toFixed(1);
+    hv.className = left >= 0 ? '' : 'bad';
+    document.getElementById('heroTip').textContent = left >= 0 ? '元 · 今日剩余' : '元 · 今日超支';
+    var pct = b > 0 ? Math.min(100, Math.round(spent / b * 100)) : 0;
+    var bar = document.getElementById('heroBar');
+    bar.style.width = pct + '%';
+    bar.className = spent > b ? 'over' : '';
+
+    document.getElementById('tToday').textContent = '¥' + (Math.round(spent * 100) / 100).toFixed(1);
+    var cl = cumulativeLeft(t.y, t.m);
+    var el = document.getElementById('tLeft');
+    el.textContent = (cl < 0 ? '-' : '') + '¥' + Math.abs(cl).toFixed(1);
+    el.className = 'v ' + (cl >= 0 ? 'v-ok' : 'v-bad');
+    var md = monthData(t.y, t.m);
+    document.getElementById('tOver').textContent = md.over + ' 天';
+  }
+
+  function renderBudgetPanel() {
+    var cur = curMonthKey();
+    var r = bRec(cur);
+    var pi = document.getElementById('curBudgetInput');
+    pi.value = monthBudget(cur);
+    var perm = budgetPerm(cur);
+    pi.disabled = !perm.can;
+    document.getElementById('curMonthLbl').textContent = cur.replace('-', ' 年 ').replace(/^(\d{4}) 年 (\d{2})$/, '$1-$2') + ' 预算';
+    var tag = document.getElementById('curLockTag');
+    tag.textContent = perm.hint;
+    if (perm.can && perm.mode === 'final') { tag.textContent = '✏️ ' + perm.hint; tag.style.color = 'var(--gold)'; }
+    else if (!perm.can) { tag.textContent = perm.hint; tag.style.color = ''; }
+    else { tag.textContent = perm.hint; tag.style.color = 'var(--ok)'; }
+
+    // 未来 3 个月
+    var t = nowDate(), box = document.getElementById('futureRows'), h = '';
+    for (var i = 1; i <= 3; i++) {
+      var m = t.m + i, y = t.y;
+      while (m > 12) { m -= 12; y++; }
+      var mk = ymKey(y, m), rr = bRec(mk), pm = budgetPerm(mk);
+      h += '<div class="bp-row">' +
+        '<span class="lbl">' + mk + '（' + m + '月）</span>' +
+        '<input type="number" min="0" step="1" data-mk="' + mk + '" value="' + (typeof rr.value === 'number' ? rr.value : '') + '"' + (pm.can ? '' : ' disabled') + ' placeholder="' + monthBudget(mk) + '">' +
+        '<button class="bp-btn' + (pm.can ? '' : ' done') + '" data-mk="' + mk + '"' + (pm.can ? '' : ' disabled') + '>' +
+        (pm.can ? '修改' : (pm.mode === 'presetLocked' ? '已预存' : '已锁定')) + '</button></div>' +
+        '<div class="bp-sub">' + (typeof rr.value === 'number'
+          ? '已预存 ¥' + rr.value + (pm.can ? '（仍可修改一次）' : '（' + pm.hint.replace('🔒 ', '') + '）')
+          : '未设置，自动沿用 ¥' + monthBudget(mk) + '') + '</div>';
+    }
+    box.innerHTML = h;
+
+    var logs = state.logs || [];
+    document.getElementById('bpLog').innerHTML = logs.length
+      ? '已锁定设置：' + logs.map(function (x) { return '<span>' + x.mk + '=¥' + x.v + '[' + x.tag + ' ' + x.ts + ']</span>'; }).join(' · ')
+      : '还没有锁定过预算设置';
+  }
+
+  function renderSign() {
+    var t = nowDate();
+    var done = getDay(todayKey()).checked;
+    var sb = document.getElementById('signBtn');
+    sb.textContent = done ? '✓ 今日已签到' : '点击签到';
+    sb.className = 'sign-btn' + (done ? ' on' : '');
+    document.getElementById('streakNum').textContent = streak();
+
+    var y = view.y, m = view.m, n = daysInMonth(y, m), b = monthBudget(ymKey(y, m));
+    var first = new Date(y, m - 1, 1);
+    var start = (first.getDay() + 6) % 7;
+    var tk = todayKey(), h = '';
+    for (var i = 0; i < start; i++) h += '<div class="cell empty"></div>';
+    for (var d = 1; d <= n; d++) {
+      var k = ymd(y, m, d), rec = state.days[k];
+      var has = rec && rec.items && rec.items.length;
+      var tt = has ? dayTotal(k) : 0;
+      var fut = isFuture(k);
+      var cls = 'cell';
+      if (has) cls += tt > b ? ' bad' : ' ok';
+      if (k === tk) cls += ' today';
+      if (fut) cls += ' future';
+      var attr = fut ? 'data-future="' + k + '"' : 'data-day="' + k + '"';
+      h += '<div class="' + cls + '" ' + attr + '>' +
+        (rec && rec.checked ? '<span class="tick">✓</span>' : '') +
+        '<div class="d">' + d + '</div>' +
+        (fut ? '<div class="amt" style="color:var(--faint)">🔒</div>'
+             : (has ? '<div class="amt">' + (Math.round(tt * 100) / 100) + '</div>' : '')) +
+        '</div>';
+    }
+    document.getElementById('cal').innerHTML = h;
+  }
+
+  function renderRec() {
+    var t = nowDate(), k = todayKey(), b = monthBudget(curMonthKey());
+    document.getElementById('recTag').textContent = '每花一笔马上记 · 今天 ¥' + b + '/天';
+
+    // 快捷标签
+    var qh = CATS.map(function (c) {
+      return '<button data-cat="' + esc(c.n) + '">' + c.i + ' ' + c.n + ' ¥' + c.p + '</button>';
+    }).join('');
+    document.getElementById('quick').innerHTML = qh;
+    document.getElementById('addCat').innerHTML = CATS.map(function (c) {
+      return '<option value="' + esc(c.n) + '">' + c.i + ' ' + c.n + '</option>';
+    }).join('');
+
+    // 今日记录
+    var items = getDay(k).items.slice().sort(function (a, b2) { return (b2.ts || 0) - (a.ts || 0); });
+    var box = document.getElementById('recList');
+    if (!items.length) {
+      box.innerHTML = '<div class="empty-tip">今天还没记账，点上面的快捷标签试试</div>';
+    } else {
+      box.innerHTML = items.map(function (it) {
+        var c = catOf(it.cat);
+        return '<div class="rec" data-id="' + esc(it.id) + '">' +
+          '<div class="ic">' + c.i + '</div>' +
+          '<div class="mid"><div class="n">' + esc(it.cat || '其他') + '</div><div class="tm">' + esc(it.time || '') + '</div></div>' +
+          '<div class="m">' + money(num(it.amt)) + '</div>' +
+          '<button class="del" data-del="' + esc(it.id) + '">✕</button></div>';
+      }).join('');
+    }
+    document.getElementById('recSum').textContent = money(dayTotal(k));
+  }
+
+  function renderTasks() {
+    var k = todayKey();
+    if (!state.tasks[k]) state.tasks[k] = { list: DEFAULT_TASKS.map(function (x) { return { t: x, done: false }; }) };
+    var arr = state.tasks[k].list;
+    var box = document.getElementById('taskList');
+    if (!arr.length) { box.innerHTML = '<div class="empty-tip">还没有任务，加一条吧</div>'; return; }
+    box.innerHTML = arr.map(function (x, i) {
+      return '<div class="task' + (x.done ? ' done' : '') + '" data-idx="' + i + '">' +
+        '<div class="box">' + (x.done ? '✓' : '') + '</div>' +
+        '<div class="tx">' + esc(x.t) + '</div>' +
+        '<button class="del" data-rmtask="' + i + '">✕</button></div>';
+    }).join('');
+  }
+
+  function renderStats() {
+    var t = nowDate(), md = monthData(t.y, t.m), b = md.budget;
+    var max = Math.max(md.max, b, 1);
+    var tk = todayKey();
+    var h = '', x = '';
+    for (var d = 1; d <= md.n; d++) {
+      var k = ymd(t.y, t.m, d), rec = state.days[k];
+      var has = rec && rec.items && rec.items.length;
+      var tt = has ? dayTotal(k) : 0;
+      var fut = isFuture(k);
+      var pct = has ? Math.max(4, Math.round(tt / max * 100)) : 0;
+      var bc = 'b';
+      if (has) bc += tt > b ? ' bad' : ' ok';
+      if (k === tk) bc += ' today';
+      if (fut) bc += ' future';
+      h += '<div class="' + (fut ? 'bc future' : 'bc') + '" ' + (fut ? 'data-future="' + k + '"' : 'data-day="' + k + '"') + ' title="' + k + (fut ? '（未到，暂不可查看）' : '') + '">' +
+        (has && !fut ? '<div class="bv">' + Math.round(tt) + '</div>' : '') +
+        '<div class="' + bc + '" style="height:' + (fut ? 0 : pct) + '%"></div></div>';
+      x += '<span class="' + (k === tk ? 'today' : (fut ? 'future' : '')) + '">' + d + '</span>';
+    }
+    document.getElementById('bars').innerHTML = h;
+    document.getElementById('barX').innerHTML = x;
+    document.getElementById('mTotal').textContent = money(md.total);
+  }
+
+  function renderDayList() {
+    var t = nowDate(), md = monthData(t.y, t.m), b = md.budget;
+    var box = document.getElementById('dayList');
+    if (!md.days.length) { box.innerHTML = '<div class="empty-tip">本月还没有记录</div>'; return; }
+    var max = Math.max(md.max, b, 1);
+    box.innerHTML = md.days.map(function (it) {
+      var names = it.items.map(function (x) { return x.cat || '其他'; }).join('、');
+      var over = it.total > b;
+      var fut = isFuture(it.key);
+      return '<div class="row' + (fut ? ' future' : '') + '" ' + (fut ? 'data-future="' + it.key + '"' : 'data-day="' + it.key + '"') + '>' +
+        '<div class="day"><b>' + pad(it.d) + '日</b>星期' + WEEK[new Date(t.y, t.m - 1, it.d).getDay()] + ' · ' + it.count + '笔</div>' +
+        '<div class="mid"><div class="names">' + esc(names) + '</div>' +
+        '<div class="track"><i class="' + (over ? 'bad' : '') + '" style="width:' + Math.min(100, Math.round(it.total / max * 100)) + '%"></i></div></div>' +
+        '<div class="money' + (over ? ' bad' : '') + '">' + (Math.round(it.total * 100) / 100).toFixed(1) + '</div></div>';
+    }).join('');
+  }
+
+  /* ============ 未来时间：只可设置预算金额 ============ */
+  var FUTURE_RULE = '未来的时间只能设置预算金额';
+
+  function openBudgetPanel(mk) {
+    var p = document.getElementById('budgetPanel');
+    p.style.display = 'block';
+    document.getElementById('toggleBudget').textContent = '⚙ 收起';
+    var el = mk === curMonthKey()
+      ? document.getElementById('curBudgetInput')
+      : document.querySelector('#futureRows input[data-mk="' + mk + '"]');
+    if (el) {
+      try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {}
+      if (!el.disabled) { el.focus(); if (el.select) el.select(); }
+    }
+    return el;
+  }
+
+  // 触碰未来时间：只允许去设置预算金额
+  function onFutureTap(k) {
+    var mk = k.slice(0, 7), perm = budgetPerm(mk);
+    var el = openBudgetPanel(mk);
+    if (perm.can) {
+      toast(FUTURE_RULE + ' · ' + cnDate(k) + '当天才能记账签到');
+    } else if (perm.mode === 'locked') {
+      toast(FUTURE_RULE + ' · 但本月预算已锁定，' + perm.hint.replace('🔒 已锁定 · ', ''));
+    } else if (perm.mode === 'presetLocked') {
+      toast(FUTURE_RULE + ' · ' + mk.slice(5, 7).replace(/^0/, '') + '月已预存，生效当月可再改一次');
+    } else {
+      toast(FUTURE_RULE + ' · ' + perm.hint);
+    }
+    return el;
+  }
+
+  /* ============ 单日抽屉 ============ */
+  function openSheet(k) {
+    if (isFuture(k)) { onFutureTap(k); return; }
+    openDate = k;
+    renderSheet();
+    document.getElementById('mask').classList.add('show');
+    document.getElementById('sheet').classList.add('show');
+  }
+  function closeSheet() {
+    document.getElementById('mask').classList.remove('show');
+    document.getElementById('sheet').classList.remove('show');
+    openDate = null;
+  }
+  function renderSheet() {
+    if (!openDate) return;
+    var k = openDate, rec = getDay(k);
+    var dt = new Date(+k.slice(0, 4), +k.slice(5, 7) - 1, +k.slice(8, 10));
+    var b = monthBudget(ymKey(dt.getFullYear(), dt.getMonth() + 1));
+    var t = dayTotal(k), over = t > b;
+    document.getElementById('sheetTitle').textContent = (+k.slice(5, 7)) + '月' + (+k.slice(8, 10)) + '日 · ' + (rec.items.length ? (over ? '超支' : '达标') : '未记账');
+    document.getElementById('sheetSub').textContent = k + ' 星期' + WEEK[dt.getDay()] + (k === todayKey() ? ' · 今天' : '') + ' · 当日预算 ¥' + b;
+    document.getElementById('dTotal').textContent = money(t);
+    var diff = Math.round((b - t) * 100) / 100;
+    var de = document.getElementById('dDiff');
+    de.textContent = (diff >= 0 ? '省 ' : '超 ') + money(Math.abs(diff));
+    de.style.color = diff >= 0 ? 'var(--ok)' : 'var(--bad)';
+    document.getElementById('dCount').textContent = rec.items.length;
+
+    document.getElementById('dCheckWrap').innerHTML =
+      '<button class="' + (rec.checked ? 'sign-btn on' : 'sign-btn') + '" id="dCheck" style="width:100%">' +
+      (rec.checked ? '✓ 已签到（点击取消）' : '签到') + '</button>';
+
+    document.getElementById('dQuick').innerHTML = CATS.map(function (c) {
+      return '<button data-cat="' + esc(c.n) + '">' + c.i + ' ' + c.n + ' ¥' + c.p + '</button>';
+    }).join('');
+    document.getElementById('dCat').innerHTML = CATS.map(function (c) {
+      return '<option value="' + esc(c.n) + '">' + c.i + ' ' + c.n + '</option>';
+    }).join('');
+
+    var items = rec.items.slice().sort(function (a, b2) { return (b2.ts || 0) - (a.ts || 0); });
+    document.getElementById('dList').innerHTML = items.length ? items.map(function (it) {
+      var c = catOf(it.cat);
+      return '<div class="rec" data-id="' + esc(it.id) + '">' +
+        '<div class="ic">' + c.i + '</div>' +
+        '<div class="mid"><div class="n">' + esc(it.cat) + '</div><div class="tm">' + esc(it.time || '') + '</div></div>' +
+        '<div class="m">' + money(num(it.amt)) + '</div>' +
+        '<button class="del" data-del="' + esc(it.id) + '">✕</button></div>';
+    }).join('') : '<div class="empty-tip">这一天还没有消费记录</div>';
+    document.getElementById('dAmt').value = '';
+  }
+
+  function addRec(k, cat, amt) {
+    if (isFuture(k)) { onFutureTap(k); return false; }
+    if (!(amt > 0)) { toast('先填个金额吧'); return false; }
+    var d = new Date();
+    getDay(k).items.push({
+      id: 'i' + Date.now() + Math.floor(Math.random() * 1000),
+      cat: cat || '其他',
+      amt: Math.round(amt * 100) / 100,
+      time: pad(d.getHours()) + ':' + pad(d.getMinutes()),
+      ts: Date.now()
+    });
+    getDay(k).checked = true;
+    save();
+    return true;
+  }
+
+  /* ============ 事件 ============ */
+  var t = nowDate();
+  view = { y: t.y, m: t.m };
+  document.documentElement.setAttribute('data-theme', state.theme);
+  document.getElementById('themeBtn').textContent = state.theme === 'dark' ? '☀️' : '🌙';
+
+  document.getElementById('themeBtn').addEventListener('click', function () {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', state.theme);
+    this.textContent = state.theme === 'dark' ? '☀️' : '🌙';
+    save();
+  });
+
+  document.getElementById('toggleBudget').addEventListener('click', function () {
+    var p = document.getElementById('budgetPanel');
+    var open = p.style.display !== 'none';
+    p.style.display = open ? 'none' : 'block';
+    this.textContent = open ? '⚙ 月度预算' : '⚙ 收起';
+  });
+
+  // 本月预算
+  document.getElementById('curBudgetInput').addEventListener('change', function () {
+    var mk = curMonthKey(), perm = budgetPerm(mk), v = parseFloat(this.value);
+    if (!perm.can) { this.value = monthBudget(mk); toast(perm.hint); return; }
+    if (!isFinite(v) || v < 0) { this.value = monthBudget(mk); return; }
+    var mode = perm.mode;
+    if (!confirm(mode === 'final' ? '这是本月最后 1 次修改机会，确认设为 ¥' + v + '？' : '预算设置后立即锁定（当月仅剩 1 次修改机会），确认设为 ¥' + v + '？')) {
+      this.value = monthBudget(mk); return;
+    }
+    setBudget(mk, v, mode === 'final');
+    save(); renderAll();
+    toast(mode === 'final' ? '已用掉最后 1 次修改，本月预算锁定为 ¥' + v : '预算已设为 ¥' + v + '，已锁定');
+  });
+
+  // 未来月份
+  document.getElementById('futureRows').addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('.bp-btn') : null;
+    if (!btn || btn.disabled) return;
+    var mk = btn.getAttribute('data-mk'), perm = budgetPerm(mk);
+    var input = this.querySelector('input[data-mk="' + mk + '"]');
+    var v = parseFloat(input.value);
+    if (!perm.can) { toast(perm.hint); return; }
+    if (!isFinite(v) || v < 0) { toast('先填个金额'); input.focus(); return; }
+    var mode = perm.mode;
+    if (!confirm(mode === 'monthFinal' ? mk + ' 已生效，这是最后 1 次修改机会，确认设为 ¥' + v + '？'
+      : '预存 ' + mk + ' 预算 ¥' + v + '，设置后即锁定（生效当月还有 1 次修改机会），确认？')) return;
+    setBudget(mk, v, mode === 'monthFinal');
+    save(); renderAll();
+    toast(mode === 'monthFinal' ? mk + ' 预算已最终锁定为 ¥' + v : mk + ' 已预存 ¥' + v);
+  });
+
+  document.getElementById('signBtn').addEventListener('click', function () {
+    var k = todayKey(), rec = getDay(k);
+    rec.checked = !rec.checked;
+    save(); renderAll();
+    toast(rec.checked ? '签到成功，连续 ' + streak() + ' 天' : '已取消签到');
+  });
+  document.getElementById('toToday').addEventListener('click', function () {
+    var n = nowDate(); view = { y: n.y, m: n.m }; renderSign();
+    toast('已回到 ' + n.y + '年' + n.m + '月');
+  });
+
+  // 记录交互（主列表 + 抽屉）
+  function bindRec(boxId, quickId, catId, amtId, addId, dayFn) {
+    document.getElementById(quickId).addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-cat]') : null;
+      if (!b) return;
+      var k = dayFn(), c = catOf(b.getAttribute('data-cat'));
+      if (addRec(k, c.n, c.p)) {
+        renderAll(); if (openDate) renderSheet();
+        toast('已记 ' + c.i + ' ' + c.n + ' ¥' + c.p);
+      }
+    });
+    document.getElementById(addId).addEventListener('click', function () {
+      var k = dayFn();
+      var c = document.getElementById(catId).value;
+      var amt = num(document.getElementById(amtId).value);
+      if (addRec(k, c, amt)) {
+        document.getElementById(amtId).value = '';
+        renderAll(); if (openDate) renderSheet();
+        toast('已记下 ' + money(amt));
+      }
+    });
+    document.getElementById(amtId).addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') document.getElementById(addId).click();
+    });
+    document.getElementById(boxId).addEventListener('click', function (e) {
+      var d = e.target.closest ? e.target.closest('[data-del]') : null;
+      if (!d) return;
+      var k = dayFn(), id = d.getAttribute('data-del'), rec = getDay(k);
+      if (!confirm('删除这笔记录？')) return;
+      rec.items = rec.items.filter(function (x) { return x.id !== id; });
+      save(); renderAll(); if (openDate) renderSheet(); toast('已删除');
+    });
+  }
+  bindRec('recList', 'quick', 'addCat', 'addAmt', 'addBtn', todayKey);
+  bindRec('dList', 'dQuick', 'dCat', 'dAmt', 'dAdd', function () { return openDate; });
+
+  document.getElementById('sheet').addEventListener('click', function (e) {
+    if (e.target.id === 'dCheck') {
+      var rec = getDay(openDate); rec.checked = !rec.checked;
+      save(); renderSheet(); renderAll(); toast(rec.checked ? '已签到' : '已取消签到');
+    }
+    if (e.target.id === 'dClear') {
+      if (!confirm('删除 ' + openDate + ' 的全部记录？')) return;
+      delete state.days[openDate];
+      save(); renderSheet(); renderAll(); toast('已清空这一天');
+    }
+    if (e.target.id === 'closeSheet') closeSheet();
+  });
+  document.getElementById('mask').addEventListener('click', closeSheet);
+
+  // 日历 / 图表 / 明细 点击
+  document.addEventListener('click', function (e) {
+    var lock = e.target.closest ? e.target.closest('[data-future]') : null;
+    if (lock) { onFutureTap(lock.getAttribute('data-future')); return; }
+    var hit = e.target.closest ? e.target.closest('[data-day]') : null;
+    if (!hit) return;
+    var k = hit.getAttribute('data-day');
+    if (isFuture(k)) { onFutureTap(k); return; }
+    openSheet(k);
+  });
+
+  // 任务
+  document.getElementById('taskList').addEventListener('click', function (e) {
+    var arr = state.tasks[todayKey()].list;
+    var rm = e.target.closest ? e.target.closest('[data-rmtask]') : null;
+    if (rm) {
+      var i = +rm.getAttribute('data-rmtask');
+      if (!confirm('删除「' + arr[i].t + '」？')) return;
+      arr.splice(i, 1); save(); renderTasks(); return;
+    }
+    var row = e.target.closest ? e.target.closest('.task') : null;
+    if (!row) return;
+    var idx = +row.getAttribute('data-idx');
+    arr[idx].done = !arr[idx].done;
+    save(); renderTasks();
+  });
+  document.getElementById('addTask').addEventListener('click', function () {
+    var el = document.getElementById('newTask'), v = el.value.trim();
+    if (!v) { toast('先写点内容'); return; }
+    state.tasks[todayKey()].list.push({ t: v, done: false });
+    el.value = ''; save(); renderTasks(); toast('已添加');
+  });
+  document.getElementById('newTask').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') document.getElementById('addTask').click();
+  });
+
+  // 数据
+  function download(name, text, type) {
+    var blob = new Blob(['\ufeff' + text], { type: type || 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  }
+  document.getElementById('btnJson').addEventListener('click', function () {
+    state.lastBackup = Date.now();
+    save();
+    download('消费签到备份_' + todayKey() + '.json', JSON.stringify(state, null, 2), 'application/json');
+    renderData();
+    toast('备份已下载，记得存到网盘或发给自己');
+  });
+  document.getElementById('btnCsv').addEventListener('click', function () {
+    var n = nowDate(), md = monthData(n.y, n.m);
+    if (!md.days.length) { toast('本月还没有记录'); return; }
+    var lines = ['日期,星期,类别,金额,时间,当日合计,当日预算'];
+    md.days.forEach(function (day) {
+      var w = '星期' + WEEK[new Date(n.y, n.m - 1, day.d).getDay()];
+      day.items.forEach(function (it) {
+        lines.push([day.key, w, '"' + String(it.cat || '').replace(/"/g, '""') + '"', num(it.amt).toFixed(2), it.time || '', day.total.toFixed(2), md.budget].join(','));
+      });
+    });
+    lines.push('');
+    lines.push('本月单日消费总计,,,,,' + md.total.toFixed(2));
+    download('消费明细_' + ymKey(n.y, n.m) + '.csv', lines.join('\n'), 'text/csv;charset=utf-8');
+    toast('CSV 已下载');
+  });
+  document.getElementById('btnImport').addEventListener('click', function () { document.getElementById('fileInput').click(); });
+  document.getElementById('fileInput').addEventListener('change', function () {
+    var f = this.files && this.files[0]; if (!f) return;
+    var fr = new FileReader();
+    fr.onload = function () {
+      try {
+        var o = JSON.parse(fr.result);
+        if (!o || typeof o !== 'object' || (!o.days && !o.budgets)) throw new Error('bad');
+        state = {
+          budgets: o.budgets || {}, days: o.days || {}, months: o.months || {},
+          tasks: o.tasks || {}, theme: o.theme === 'dark' ? 'dark' : 'light',
+          lastBackup: typeof o.lastBackup === 'number' ? o.lastBackup : 0,
+          logs: Array.isArray(o.logs) ? o.logs : []
+        };
+        save(); renderAll();
+        toast('数据已恢复 · 共 ' + statCounts().items + ' 笔记录');
+      } catch (e) { toast('文件格式不对，恢复失败'); }
+    };
+    fr.readAsText(f); this.value = '';
+  });
+  document.getElementById('btnTest').addEventListener('click', function () {
+    if (!confirm('载入一批演示数据（不会覆盖已有记录，仅补充本月数据）？')) return;
+    var n = nowDate();
+    for (var d = 1; d < n.d; d++) {
+      var k = ymd(n.y, n.m, d);
+      if (state.days[k] && state.days[k].items.length) continue;
+      var c1 = CATS[d % 5], c2 = CATS[(d + 2) % 5];
+      getDay(k).items.push({ id: 't' + d + 'a', cat: c1.n, amt: c1.p + (d % 7 === 0 ? 15 : 0), time: pad(8 + d % 3) + ':' + pad(d % 60), ts: Date.now() - d * 1000 });
+      if (d % 3 === 0) getDay(k).items.push({ id: 't' + d + 'b', cat: c2.n, amt: c2.p, time: pad(12 + d % 5) + ':' + pad(d % 60), ts: Date.now() - d * 999 });
+      getDay(k).checked = true;
+    }
+    if (!state.budgets[curMonthKey()]) setBudget(curMonthKey(), 30, false);
+    save(); renderAll(); toast('演示数据已载入');
+  });
+
+  renderAll();
+
+  // 有记录但久未备份，进页面提醒一次
+  var sc = statCounts();
+  if (sc.items > 0 && (!state.lastBackup || Date.now() - state.lastBackup > 7 * 86400000)) {
+    setTimeout(function () {
+      toast('已存 ' + sc.items + ' 笔记录，建议点「备份数据」导出一份');
+    }, 1200);
+  }
+})();
+</script>
+</body>
+</html>
